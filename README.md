@@ -66,6 +66,3 @@ install.packages(c(
 ---
 ## Disclaimer
 This project is for research and educational purposes only and does not constitute financial advice.
-  "ggplot2",
-  "lubridate"
-))
