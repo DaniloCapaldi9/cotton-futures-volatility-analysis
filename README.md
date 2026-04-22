@@ -62,7 +62,7 @@ install.packages(c(
   "ggplot2",
   "lubridate"
 ))
-
+```
 ---
 ## Disclaimer
 This project is for research and educational purposes only and does not constitute financial advice.
