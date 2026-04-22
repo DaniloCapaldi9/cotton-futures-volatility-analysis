@@ -1,0 +1,547 @@
+---
+title: "An Empirical Analysis of Volatility in Cotton Futures."
+author: "Capaldi Danilo"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+library(quantmod)
+library(tidyverse)
+library(rugarch)
+library(MSwM)
+library(PerformanceAnalytics)
+library(tseries)
+library(ggplot2)
+library(lubridate)
+```
+
+# Cotton Futures: Motivation and Data Construction
+
+Cotton futures are widely used as a benchmark in the analysis of soft commodities. Cotton is a globally traded agricultural product whose price dynamics are highly influenced by supply-side factors, such as weather conditions, inventory cycles and geopolitical trade policies. For these reasons, cotton futures are particularly suitable for studying volatility, downside risk, and stress regimes, that are central elements in supply chain management and risk control for agricultural-related industries.
+
+Future prices reflect market expectations about future supply-demand conditions and are the primary instrument used by producers, processors and industrial users to hedge price risk.
+
+## Data Source, Adjusted Prices and Log-Returns
+
+Daily futures prices for cotton are retrieved from Yahoo Finance using the continuous contract **CT=F**, covering the period from January 2000 to January 2026, so that the whole 2025 is covered.
+
+The analysis is done using **adjusted prices**, which account for contract rollovers and ensure continuity in the price series. This adjustment is essential because unadjusted prices may contain artificial jumps related to contract expiration.
+
+The prices series is transformed into daily log-returns, defined as the logarithmic difference of consecutive adjusted prices. Log-returns are preferred to simple returns for several reasons: - They are time-additive, simplifying aggregation and modeling. - They are approximately normally distributed for small intervals. - They are scale-invariant, allowing comparisons across different price levels.
+
+Missing observations that arise from non-trading days or contract transitions are removed following standard practice in financial econometrics. Finally, the distribution of observations across calendar year is reported to verify data availability and temporal coverage, ensuring that the sample adequately captures multiple market cycles and stress periods.
+
+```{r}
+getSymbols("CT=F", src = "yahoo", from = "2000-01-01", to="2026-01-01")
+adjusted_prices <- Ad(`CT=F`)
+```
+
+```{r}
+returns<-dailyReturn(adjusted_prices,type = 'log')
+na.omit(returns)
+table(year(index(returns)))
+```
+
+After removing observations, the return series shows a highly regular distribution across calendar years, with approximately 250 trading days per year. This confirms that the dataset does not suffer from structural gaps or irregular sampling that could bias volatility and risk estimation.
+
+```{r}
+plot(adjusted_prices)
+```
+
+The analysis begins with the examination of the Cotton Adjusted Close Prices.
+
+The most prominent feature is the vertical ascent toward the 200 USD cents/lb mark during 2011. This historical outlier—driven by a "perfect storm" of low global ending stocks, climate-induced crop failures in Pakistan, and export bans in India—represents a catastrophic scenario for procurement departments. It underscores the danger of assuming a linear price evolution.
+
+After nearly a decade of relative consolidation (mostly between 60 and 90 cents), the market experienced a secondary explosion in 2022, breaching 150 cents. This highlight shows that supply chain disruptions and inflationary pressures can trigger rapid regime shifts even after years of stability.
+
+Despite the spikes, the market exhibits a clear tendency to return to a long-term "equilibrium" zone. However, the path back to the mean is often characterized by high-intensity volatility, justifying the need for a non-linear risk model.
+
+From a Risk Management perspective, this chart serves as the primary "call to action." The visual evidence of sudden, violent price jumps (jumps in the stochastic process) confirms that the presence of these spikes suggests that the underlying distribution of returns will have fat tails (kurtosis), making standard Gaussian models (like simple VaR) dangerously inadequate.
+
+High-price periods are clearly associated with higher price "scatter." This validates the use of Conditional Heteroskedasticity models (GARCH) to manage procurement costs.
+
+For a manufacturer, these price dynamics translate directly into margin compression. Analyzing the adjusted prices allows us to identify the "stress regimes" that a robust hedging strategy must be able to withstand.
+
+```{r}
+chart.Histogram(returns, methods = c("add.density","add.normal"), main="Log-returns Distribution (CT=F)")
+```
+
+The histogram of the log-returns, overlaid with a Normal distribution (light blue line) and a Kernel Density Estimate (dark blue line), serves as a fundamental diagnostic tool for understanding the risk characteristics of the cotton market.
+
+The visual evidence immediately rejects the assumption of normality. While the Gaussian curve (light blue) expects returns to be tightly clustered around the mean, the actual data (dark blue/bars) exhibits:
+
+-   High Kurtosis (Leptokurtosis): The distribution is significantly "peaked" at the center and features much thicker tails than a normal distribution. This means that "extreme" price swings occur far more frequently than standard risk models would predict.
+
+-   Skewness: There is a visible asymmetry in the tails. The distribution is negatively skewed, indicating that the market is prone to sudden, violent downward shocks in returns (which often correspond to upward price spikes in commodities).
+
+Relying on a Normal-VaR (Value at Risk) would lead to a systematic underestimation of Tail Risk. If the risk of a 10% price jump is modeled as a "1-in-a-1000-years" event (Normal) when it is actually a "1-in-a-50-days" event (Empirical), the company remains exposed to unhedged financial distress. This distribution justifies the use of the Student-t distribution in the GARCH specification. By allowing for heavier tails, the model expects extreme events, leading to a more accurate and conservative Expected Shortfall (ES).
+
+```{r}
+table.Stats(returns)
+acf(returns, main="ACF Returns")
+acf(returns^2, main="ACF Squared Returns")
+jarque.bera.test(coredata(returns))
+```
+
+The first plot, **ACF Returns**, shows the correlation of the returns with their own past values (lags). Most lags (except for lag 0, which is always 1) fall within the blue dashed significance boundaries. This suggests that the returns themselves are largely unpredictable and resemble a "White Noise" process. For a manufacturing firm, this indicates that price directions are not easily forecasted using simple past trends. The market is relatively efficient in the mean, justifying the use of a low-order ARMA process for the mean model. The second plot, **ACF Squared Returns**, is the most revealing for risk management. By squaring the returns, the focus is on the magnitude (volatility) rather than the direction. Unlike the first chart, it is possible to see significant and persistent spikes at several lags. This is a clear sign of Volatility Clustering: large price changes tend to be followed by large price changes, and small changes by small changes. The presence of autocorrelation in squared returns—despite its absence in simple returns—is a formal indicator of Conditional Heteroskedasticity. This provides the "smoking gun" evidence that risk is not constant over time. It statistically mandates the use of a GARCH-type model to forecast the fluctuating "risk regimes" in the cotton supply chain.
+
+Among the descriptive statistics, several features are particularly informative. The negative skewness (−0.4531) indicates an asymmetric return distribution, with downside price movements being larger and more abrupt than upside ones, a common characteristic of soft commodity markets where adverse supply or demand shocks tend to materialize suddenly.
+
+The high kurtosis (10.1020) points to fat tails and an excess of extreme observations relative to the normal distribution, suggesting that standard Gaussian assumptions are inappropriate for modeling cotton futures returns. This implies that extreme events occur more frequently than predicted by a normal model, increasing downside risk.
+
+The autocorrelation function of squared returns exhibits significant persistence, providing clear evidence of volatility clustering, a well-documented stylized fact in commodity markets. This behavior motivates the use of conditional heteroskedasticity models, such as GARCH-type specifications, to capture time-varying volatility dynamics.
+
+Finally, the Jarque–Bera test strongly rejects the null hypothesis of normality (p-value \< 2.2e−16), jointly confirming the presence of skewness and heavy tails. Taken together, these results support the adoption of non-Gaussian conditional volatility models for an accurate representation of risk in cotton futures markets.
+
+# GARCH Modeling
+
+## Model Specification.
+
+In order to model the time-varying volatility observed in cotton futures returns, a standard **GARCH(1,1)** is firstly adopted as a benchmark specification. Let $r_t$ denote the daily log-return at time $t$, the model is defined as:
+
+$$r_t=\mu+\epsilon_t,\quad \epsilon_t=\sigma_tz_t$$ where $\mu$ is the conditional mean, $\sigma_t$ is the conditional standard deviation and $z_t$ is an i.i.d. innovation term following a standardized Student-t distribution, allowing for heavy tails and improving the model’s ability to capture extreme price movements in order to account for the excess kurtosis observed in the return distribution.
+
+The conditional variance evolves according to the **GARCH(1,1)** process:
+
+$$\sigma_t^2=\omega+\alpha\,\epsilon_{t-1}^2+\beta\,\sigma_{t-1}^2$$ with $\omega>0$, $\alpha \ge0$ and $\beta \ge0$. Moreover, stationarity requires $\alpha+\beta<1$.
+
+## sGARCH(1,1) Specification.
+
+The **sGARCH(1,1)** (standard GARCH) specification models volatility as a function of:
+
+-   Past squared shocks ($\epsilon_{t-1}^2$) capturing the immediate impact of new information.
+
+\- Past conditional variance ($\sigma_{t-1}^2$) capturing volatility persistence. This formulation allows the model to reproduce volatility clustering. The choice of order (1,1) is motivated by empirical evidence showing that this specification is often sufficient to capture the persistence of volatility in financial and commodity returns, while remaining parsimonious.
+
+## ARMA(0,0) assumption.
+
+The conditional mean is modeled as an **ARMA(0,0)** process:
+
+$$r_t=\mu+\epsilon_t$$ implying that returns are assumed to be serially uncorrelated once conditional heteroskedasticity is accounted for. This assumption reflects the limited predictability of daily commodity futures returns and serves as a natural baseline for efficiency. Any residual autocorrelation in the standardized residuals would indicate potential misspecification of the mean equation and motivate the introduction of ARMA terms, which can be explored in subsequent model extensions.
+
+```{r}
+spec_garch <- ugarchspec(variance.model=list(model="sGARCH", garchOrder=c(1,1)),
+                     mean.model=list(armaOrder=c(0,0), include.mean=TRUE),
+                     distribution.model='std')
+fit_garch <- ugarchfit(spec = spec_garch, data=returns)
+fit_garch
+
+```
+
+The estimated GARCH(1,1) model provides several relevant insights into the volatility dynamics of cotton futures returns. The estimated parameters $\alpha=0.0433$ and $\beta=0.9490$ indicate a high degree of volatility persistence, as their sum is close to unity. This implies that volatility shocks dissipate slowly over time, a typical feature of soft commodity markets where supply-side disturbances, such as weather conditions or inventory adjustments, can have long-lasting effects.
+
+The estimated conditional mean is close to zero and statistically insignificant ($\mu\approx0$), confirming the limited predictability of daily futures returns and supporting the assumption of market efficiency in the mean equation.
+
+Consistent with the descriptive analysis, the estimated degrees of freedom of the Student-t distribution ($\nu\approx5.2$) provide strong evidence of heavy-tailed return behavior, further justifying the use of non-Gaussian innovations instead of a normal specification.
+
+Diagnostic tests indicate that the model successfully captures conditional heteroskedasticity. In particular, the ARCH LM tests do not reject the null hypothesis of no remaining ARCH effects, suggesting that the volatility dynamics are adequately modeled. However, the Ljung–Box tests on standardized residuals reveal residual serial correlation in the mean equation, indicating that the ARMA(0,0) specification may be overly restrictive. This motivates the inclusion of autoregressive and moving average terms in subsequent model extensions.
+
+Moreover, the Nyblom stability test strongly rejects parameter stability, signaling the presence of structural changes in the volatility process over the sample period. This result is consistent with the long time span of the data, which includes multiple commodity cycles and regime shifts.
+
+Finally, while the standard GARCH model captures volatility persistence and heavy tails, it imposes a symmetric response of volatility to positive and negative shocks. The evidence of asymmetry in commodity markets suggests that this restriction may be inappropriate, motivating the adoption of asymmetric specifications such as the GJR-GARCH model.
+
+Overall, the GARCH(1,1) model serves as a robust benchmark that captures the main stylized facts of cotton futures returns but highlights the need for more flexible models to account for asymmetry and structural instability.
+
+# Asymmetric volatility modeling: the GJR-GARCH framework
+
+To account for asymmetric effects, the **GJR-GARCH(1,1)** model is introduced. The model is defined as:
+
+$$r_t=\mu+\epsilon_t, \quad \epsilon_t=\sigma_tz_t$$ $$\sigma_t^2=\omega+\alpha\,\epsilon_{t-1}^2+\gamma\,\epsilon_{t-1}^2\,\mathbb{I}_{\{\epsilon_{t-1}<0\}}+\beta\,\sigma_{t-1}^2$$
+
+where $\mathbb{I}_{\{\epsilon_{t-1}<0\}}$ is an indicator function taking value 1 when the previous shock is negative and 0 otherwise. The parameter $\gamma$ captures the **leverage effect**, that is a stylized fact by which negative shocks have a stronger impact on conditional volatility than positive shocks of the same magnitude.
+
+In line with the benchmark model, the conditional mean is initially specified as an ARMA(0,0) process, ensuring direct comparability with the standard GARCH model and reflecting the limited predictability of daily cotton futures returns.
+
+Accordingly, the GJR-GARCH model with ARMA(0,0) serves as a natural first extension to assess whether accounting for asymmetry alone improves model performance.
+
+```{r}
+spec_gjr_arma00 <- ugarchspec(variance.model = list(model="gjrGARCH", garchOrder=c(1,1)),mean.model = list(armaOrder=c(0,0), include.mean=TRUE),distribution.model = "std")
+
+fit_gjr_arma00 <- ugarchfit(spec = spec_gjr_arma00, data = returns)
+fit_gjr_arma00
+```
+
+The GJR-GARCH(1,1) model with an ARMA(0,0) mean specification provides further insights into the volatility dynamics of cotton futures returns. As in the benchmark case, the conditional mean is statistically insignificant and close to zero, confirming the limited predictability of daily returns.
+
+The estimated volatility parameters indicate strong persistence, with $\alpha=0.0362$ and $\beta=0.9453$, whose sum remains close to unity. This confirms that volatility shocks tend to decay slowly over time, consistent with the long-lasting impact of supply-side disturbances in agricultural commodity markets.
+
+A key result of the GJR specification is the estimate of the asymmetry parameter $\gamma$. The coefficient is positive and statistically significant under conventional standard errors, suggesting that negative shocks increase conditional volatility more than positive shocks of the same magnitude. This finding is economically meaningful and supports the hypothesis of asymmetric volatility responses in cotton futures markets. However, when robust standard errors are considered, the asymmetry effect becomes statistically weaker, indicating that leverage effects, while present, may not be uniformly strong across the entire sample.
+
+The Student-t shape parameter remains highly significant, confirming the persistence of heavy tails and reinforcing the inadequacy of Gaussian assumptions even after accounting for asymmetry.
+
+From a diagnostic perspective, the model successfully removes remaining ARCH effects, as indicated by the ARCH LM tests. Nevertheless, the Ljung–Box tests on standardized residuals continue to reject the null hypothesis of no serial correlation, pointing to residual dependence in the mean equation. This suggests that asymmetry in volatility alone is not sufficient to fully capture the return dynamics.
+
+Moreover, the Nyblom stability test strongly rejects parameter constancy, providing evidence of structural instability in the volatility process over the sample period. This result is consistent with the long time span of the data and the presence of multiple commodity cycles and regime shifts.
+
+Overall, the GJR-GARCH(1,1) model improves upon the standard GARCH benchmark by explicitly modeling asymmetric volatility responses, but residual serial correlation and parameter instability remain. These findings motivate a further extension of the mean equation to an ARMA(1,1) specification, which is explored in the next step.
+
+```{r}
+spec_gjr_arma11 <- ugarchspec(variance.model=list(model='gjrGARCH', garchOrder=c(1,1)), mean.model=list(armaOrder=c(1,1), include.mean=TRUE), distribution.model='std')
+
+fit_gjr_arma11 <- ugarchfit(spec=spec_gjr_arma11, data = returns)
+fit_gjr_arma11
+```
+
+Extending the GJR-GARCH(1,1) model by allowing for an ARMA(1,1) structure in the mean equation leads to a more flexible representation of return dynamics. Both the autoregressive and moving average coefficients are statistically significant, indicating the presence of short-term serial dependence in daily cotton futures returns that was not captured by the ARMA(0,0) specification.
+
+The conditional mean remains economically negligible and statistically insignificant, confirming that any predictability in returns is limited and confined to short-lived dynamics rather than persistent trends.
+
+Volatility dynamics remain highly persistent, with $\alpha=0.0363$ and $\beta=0.9446$, whose sum is close to unity. This confirms the robustness of the persistence result across model specifications and reinforces the interpretation of long-lasting volatility effects driven by supply-side and macroeconomic shocks.
+
+The asymmetry parameter $\gamma$ is positive and statistically significant under conventional standard errors, supporting the presence of asymmetric volatility responses to negative shocks. However, as in the ARMA(0,0) case, the asymmetry effect weakens when robust standard errors are considered, suggesting that leverage effects may vary across subperiods and market conditions rather than being uniformly strong over the entire sample.
+
+The Student-t shape parameter remains highly significant, confirming the persistence of heavy tails even after accounting for asymmetric volatility and richer mean dynamics.
+
+From a diagnostic perspective, the inclusion of ARMA terms improves the behavior of standardized residuals relative to previous specifications, although some residual serial correlation remains at short lags. The ARCH LM tests indicate that conditional heteroskedasticity is adequately captured, while the Nyblom stability test continues to signal parameter instability, consistent with the presence of structural changes over a long historical sample.
+
+Overall, the GJR-GARCH(1,1) with ARMA(1,1) represents the most flexible and empirically adequate specification among the models considered. While it does not eliminate all evidence of structural instability, it provides a substantially improved description of return dynamics and volatility asymmetry, making it a suitable foundation for risk measurement and forecasting applications.
+
+## Model Diagnostic
+
+### Standardized residuals and Ljung–Box tests
+
+Standardized residuals are computed as:
+
+$$\hat{z}_t=\frac{\epsilon_t}{\hat{\sigma}_t}$$ and represent the remaining shocks after accounting for conditional mean and variance.
+
+```{r}
+std_resid <- residuals(fit_gjr_arma11, standardize=TRUE)
+```
+
+```{r}
+Box.test(std_resid, lag=20, type='Ljung-Box')
+```
+
+```{r}
+Box.test(std_resid^2, lag=20, type='Ljung-Box')
+```
+
+The **Ljung-Box test** shows **p=0.6663** for residuals and **p=0.7362** for squared residuals. These high p-values fail to reject the null hypothesis of no autocorrelation, indicating that the ARMA(1,1) specification and the GJR-GARCH variance equation together effectively remove linear and non-linear dependence from the series and confirming that the model captures both volatility clustering and short-term serial correlation in returns.
+
+## Model Selection.
+
+### Information Criteria.
+
+When comparing competing GARCH-type models, information criteria provide a formal trade-off between goodness of fit and model parsimony. All criteria are based on the maximized log-likelihood and penalize excessive parameterization to avoid overfitting.
+
+In general, an information criterion can be written as:
+
+$$IC= -2\,\mathcal{l}\,(\hat{\theta})+penalty\,(k,\,T)$$
+
+where $\mathcal{l}\,(\hat{\theta})$ is the maximized log-likelihood, $k$ is the number of estimated parameters, and $T$ is the sample size. Lower values indicate a better model.
+
+#### Akaike Information Criterion (AIC).
+
+$$AIC=-2\,\mathcal{l}\,(\hat{\theta})+2\,k\ .$$ The Akaike Criterion emphasizes in-sample predictive accuracy and tends to favor more flexible models. It is very useful when the goal is to forecast volatility.
+
+#### Bayesian Information Criterion (BIC).
+
+$$BIC= -2\,\mathcal{l}\,(\hat{\theta})+k\,\log(T)\ .$$ The Bayesian Criterion imposes a strong penalty for model complexity, especially in large samples. Therefore, it is more conservative and often selects more parsimonious specifications.
+
+#### Shibata Criterion.
+
+The Shibata criterion is asymptotically equivalent to the AIC and is primarily designed to optimize out-of-sample prediction performance in large samples. In practice, it usually leads to conclusions similar to the AIC.
+
+#### Hannan-Quinn Criterion (HQ).
+
+$$HQ= -2\,\mathcal{l}\,(\hat{\theta})+2k\,\log(\log(T))\ .$$ The Hannan–Quinn criterion represents a compromise between AIC and BIC, applying a penalty that grows faster than AIC but slower than BIC as the sample size increases.
+
+```{r}
+info_criteria<-rbind(
+  sGARCH_ARMA00=infocriteria(fit_garch),
+  GJR_ARMA00=infocriteria(fit_gjr_arma00),
+  GJR_ARMA11=infocriteria(fit_gjr_arma11)
+)
+
+info_criteria
+```
+
+Information criteria confirm that the GJR-GARCH(1,1) model with ARMA(1,1) performs slightly better than simpler models and that differences are small, but the trend consistently favors asymmetric volatility and richer mean dynamics. These results indicate that including leverage effects and short-term autocorrelation improves model fit, even if modestly.
+
+## Parameter Stability: Nyblom test.
+
+The Nyblom test checks whether model parameters are stable over the sample period.
+
+```{r}
+nyblom(fit_gjr_arma11)
+```
+
+The Joint statistic is:
+
+$$JointStat=38.7789≫Critical Values(10\%,5\%,1\%=1.89,2.11,2.59)$$ Indicating significant parameter instability. Individual parameters like $\alpha_1$, $\beta_1$ and $\gamma$ also show high statistics. This is not surprising given the long historical period of cotton futures (2000–2025) and reflects structural changes, commodity cycles, and varying market regimes.
+
+# Value at Risk (VaR): definition and model-based implementation
+
+The Value at Risk (VaR) is one of the most widely used risk measures in financial econometrics and risk management. For a given confidence level $\alpha\in(0,1)$, the VaR represents the maximum expected loss over a fixed time horizon such that the probability of exceeding this loss is $\alpha$. Formally, letting $r_t$ denote asset log-returns, the $\alpha$-VaR is defined as the conditional quantile of the return distribution:
+
+$$VaR_{\,\alpha,\,t}=\inf\{x\in\mathbb{R}:\mathbb{P}(r_t\le x\,|\,\mathcal{F}_{t-1})\ge \alpha\}$$
+
+where $\mathcal{F}_{t-1}$ is the information set available at time $t-1$.
+
+Within a GARCH-type framework, returns are modeled as:
+
+$$r_t=\mu_t+\sigma_t\,z_t$$ where: - $\mu_t=\mathbb{E}[r_t\,|\,\mathcal{F}_{t-1}]$ is the conditional mean. - $\sigma_t=\sqrt{\mathbb{V}[r_t\,|\,\mathcal{F}_{t-1}]}$ is the conditional volatility. - $z_t$ is an i.i.d. innovation with zero mean and unit variance.
+
+Given an assumed conditional distribution for $z_t$, the VaR at level $\alpha$ can be written as:
+
+$$VaR_{\,\alpha,\,t}=\mu_t+\sigma_t\,q_{\alpha}$$ where $q_{\alpha}$ is the $\alpha$-quantile of the standardized innovation distribution.
+
+```{r}
+mu_t <- fitted(fit_gjr_arma11)
+sigma_t <- sigma(fit_gjr_arma11)
+df_t <- coef(fit_gjr_arma11)['shape']
+```
+
+Two commonly used confidence levels are considered:
+
+-   $\alpha=0.05$, corresponding to a 95% VaR.
+-   $\alpha=0.01$, corresponding to a 99% VaR.
+
+The 95% VaR captures moderate tail risk, while the 99% VaR focuses on more extreme loss events and is therefore more conservative.
+
+```{r}
+VaR_95 <- mu_t + sigma_t*qdist('std', p=0.05, shape=df_t)
+VaR_99<- mu_t + sigma_t*qdist('std', p=0.01, shape=df_t)
+```
+
+A VaR violation (or exceedance) occurs when the realized return falls below the estimated VaR, so that the indicator variable $\mathbb{I}_T^{(\alpha)}$ equals 1 if $r_t<VaR_{\,\alpha,\,t}$ and 0 otherwise. Under a correctly specified model, the proportion of violations should be close to the nominal level $\alpha$, meaning that approximately 5% (or 1%) of observations should violate the 95% (or 99%) VaR. The empirical mean of the violation indicator therefore provides a first diagnostic check of VaR adequacy before conducting formal backtesting procedures.
+
+```{r}
+viol_95<- returns<VaR_95
+viol_99<- returns<VaR_99
+mean(viol_95)
+mean(viol_99)
+```
+
+Both values are remarkably close to their theoretical levels of 5% and 1%, respectively. This result indicates that the model is able to capture tail risk, even at extreme confidence levels. In particular, the slight underestimation of violations at the 99% level suggests a conservative behavior of the risk measure. The good alignment between empirical and nominal violation rates confirms that the conditional volatility dynamics are well specified, the asymmetric response of volatility to negative shocks is properly captured and that the Student-t distribution adequately models the heavy-tailed nature of returns. Overall, these preliminary results support the use of the selected GJR-GARCH model as a reliable framework for Value at Risk estimation.
+
+## Kupiec Test.
+
+While the VaR violations provide an intuitive check of VaR accuracy, practice requires formal statistical backtesting procedures. One of the most used tests is the Kupiec Proportion of Failures (POF) test. This test evaluates whether the observed frequency of VaR exceedances is statistically consistent with the nominal confidence level of the VaR model. Formally, under the null hypothesis, exceedances follow a Bernoulli process with probability $\alpha$:
+
+$$H_0\ :\ \mathbb{P}\,(I_t=1)=\alpha$$ The test compares the expected number of exceedances $T\alpha$ with the actual number observed, using a likelihood ratio statistic asymptotically distributed as a $\chi^2\,(1)$.
+
+In addition to the unconditional coverage test, the conditional coverage test jointly evaluates the correctness of the exceedance probability and the independence of exceedances over time.
+
+```{r}
+kupiec_95<- VaRTest(
+  alpha=0.05, actual = coredata(returns), VaR = coredata(VaR_95)
+)
+
+kupiec_99 <- VaRTest(
+  alpha = 0.01, actual = coredata(returns), VaR=coredata(VaR_99)
+)
+
+kupiec_95
+kupiec_99
+```
+
+At the 95% confidence level, the model predicts 326 exceedances, while 322 are observed. The difference is negligible and confirms a very accurate calibration of the VaR. The Kupiec test output reports no numerical value for the LR statistics, resulting in undefined p-values. This occurs when the empirical exceedance rate is extremely close to the theoretical one, causing numerical degeneracy in the likelihood ratio. In practical terms, this outcome indicates perfect or near-perfect unconditional coverage, and therefore no evidence against the null hypothesis of correct VaR calibration. Thus, at the 95% level, the model passes both unconditional and conditional coverage requirements from a practical risk management perspective.
+
+At the 99% confidence level, the expected number of exceedances is 65, while the observed number is 52. The unconditional coverage test yields: LR statistic equal to $2.90$, the Critical value equal to $3.84$ and the p-value equal to $0.089$. As a result, the null hypothesis of correct exceedance frequency cannot be rejected, indicating that the model does not underestimate tail risk at the 99% confidence level. The lower number of observed violations suggests a conservative VaR. However, the conditional coverage test rejects the null hypothesis at the 1% significance level. This result indicates that, although the overall number of exceedances is correct, violations are not independently distributed over time and tend to cluster.
+
+These findings highlight an important distinction in VaR backtesting. While the selected GJR-GARCH model with Student-t innovations performs well in terms of unconditional coverage, especially at extreme quantiles, the rejection of conditional coverage at the 99% level suggests that extreme losses tend to occur in bursts, even after accounting for asymmetric volatility dynamics. This behavior is consistent with stress periods in commodity markets, where supply-side shocks, weather events, and macroeconomic disruptions generate sequences of extreme returns. From a modeling perspective, this result motivates the use of VaR as a necessary but not sufficient risk measure, and supports complementing it with Expected Shortfall or regime-dependent risk models.
+
+## Expected Shortfall
+
+Expected Shortfall at confidence level $\alpha$ is defined as the expected loss conditional on the loss exceeding the VaR:
+
+$$ES_{\alpha}=\mathbb{E}\,[r_t\,|\,r_t<VaR_{\,\alpha}]$$ It is a coherent risk measure satisfying all four coherence axioms (monotonicity, subadditivity, homogeneity, translation invariance). In particular, subadditivity ensures that diversification is properly rewarded, which is not guaranteed under VaR.
+
+Given the structure for retunrs modeling adopted in this framework, Expected Shortfall is time-varying and depends explicitly on the conditional mean, on the conditional volatility and on the tail behavior of the Student-t distribution. For Student-t innovations, the Expected Shortfall admits a closed-form expression:
+
+$$ES_{\alpha}=\mu_t+\sigma_t\ \frac{f_{\nu}(q_{\,\alpha})}{\alpha}\ \left(\frac{\nu+q_{\,\alpha}^2}{\nu-1}\right)$$ where: - $q_{\,\alpha}$ is the $\alpha$-quantile of the Student-t distribution. - $f_{\nu}(\cdot)$ is the corresponding density. - $\nu>1$ ensures that ES is finite.
+
+```{r}
+ES_95 <- mu_t + sigma_t *(ddist('std', qdist('std',0.05,shape=df_t), shape=df_t)/0.05)*((df_t+qdist('std',0.05, shape=df_t)^2)/(df_t - 1))
+
+ES_99 <- mu_t + sigma_t *(ddist('std', qdist('std',0.01,shape=df_t), shape=df_t)/0.01)*((df_t+qdist('std',0.01, shape=df_t)^2)/(df_t - 1))
+```
+
+```{r}
+plot(returns, main = "Returns vs Expected Shortfall", col = "grey", lwd = 0.5)
+  lines(ES_95, col = "blue", lwd = 1)
+  lines(ES_99, col = "red", lwd = 1)
+  legend("bottomleft",
+         legend = c("Returns", "ES 95%", "ES 99%"),
+         col = c("grey", "blue", "red"),
+         lty = 1, bty = "n")
+```
+
+This visualization provides a comprehensive historical audit of the model's ability to capture and anticipate Tail Risk in the Cotton Futures market. By overlaying daily log-returns (grey) with the estimated Expected Shortfall (ES) at the 95% (blue) and 99% (red) confidence levels. Unlike static risk measures, the conditional ES lines exhibit high sensitivity to market regimes. During periods of extreme stress—most notably the 2011 supply shock and the 2022 post-pandemic surge—the risk envelopes expand rapidly. This "volatility clustering" behavior proves the model’s efficacy in adjusting capital requirements dynamically as market nervousness increases. The model successfully accounts for the "leverage effect," where the risk boundaries respond more aggressively to downward price shocks (often translating to upward spikes in commodity prices). The chart illustrates the superiority of Expected Shortfall as a metric. While VaR only identifies the minimum loss threshold, the red and blue lines here quantify the average loss expected in the worst-case scenarios. The fact that the most extreme grey spikes rarely penetrate the red line validates the model's conservative and robust calibration. For strategic decision-making, this chart acts as a historical "backtest." It demonstrates that if the company had used this GJR-GARCH framework, it would have possessed an early-warning system capable of flagging high-risk periods before they culminated in catastrophic financial losses.
+
+# Volatility Regime Identification
+
+Financial markets, and commodity markets in particular, are characterized by regime-dependent behavior. Periods of tranquil price dynamics tend to alternate with episodes of heightened uncertainty, often driven by macroeconomic shocks, supply disruptions, or geopolitical events. Capturing these structural differences is essential for understanding risk dynamics beyond average behavior. In this study, volatility regimes are identified using the conditional volatility estimated from the GJR-GARCH model. This approach is model-consistent: instead of relying on ad hoc rolling measures or realized volatility, regimes are defined based on the market’s expected risk level, conditional on past information.
+
+## Quantile-based classification
+
+Denoting the conditional volatility at time $t$ as $\sigma_t$, regimes are defined using empirical quantiles such that the Low Volatility Regime is characterized by $\sigma_t<Q_{0.70}$, the Medium Volatility Regime is characterized by $Q_{0.70}\le \sigma_t<Q_{0.90}$ and the High Volatility Regime is characterized by $\sigma_t \ge Q_{0.90}$, where $Q_{0.70}$ and $Q_{0.90}$ represent the 70th and 90th percentiles of the conditional volatility distribution. These quantiles provide a balanced trade-off between statistical reliability and economic relevance because the low volatility regime captures normal market conditions, the medium regime reflects transitional phases and the high volatility regime isolates extreme conditions where risk measures are expected to behave differently. This classification is particularly suitable for commodity futures markets, where volatility spikes tend to coincide with supply-side shocks and are not symmetrically distributed over time.
+
+```{r}
+vol_t <- sigma(fit_gjr_arma11)
+```
+
+```{r}
+q70 <- quantile(vol_t, 0.70, na.rm=TRUE)
+q90 <- quantile(vol_t, 0.90, na.rm=TRUE)
+
+regime <- ifelse(
+  vol_t >= q90, 'High Volatility (stress)',
+  ifelse(vol_t >= q70, 'Medium Volatility', 'Low Volatility')
+)
+
+regime <- factor(regime,
+                 levels=c('Low Volatility',
+                          'Medium Volatility',
+                          'High Volatility (stress)'))
+```
+
+## VaR violations across volatility regimes
+
+After classifying observations into volatility regimes, the next step is to assess whether tail risk materializes differently across market states. This is done by analyzing the frequency of Value at Risk (VaR) violations within each regime.
+
+The contingency tables report, for each volatility regime, the number of days in which the realized return falls below the 99% VaR threshold (violations) and the corresponding proportions.
+
+```{r}
+table(regime, viol_99)
+```
+
+```{r}
+prop.table(table(regime, viol_99), margin = 1)
+```
+
+The proportion of VaR violations by regime is summarized as follows: - Low Volatility Regime: $0.85\%$. - Medium Volatility Regime: $0.77\%$. - High Volatility Regime: $0.46\%$.
+
+At first glance, this result may appear counterintuitive, as one might expect more violations during high-volatility periods. However, this pattern is economically meaningful and consistent with conditional risk modeling. The lower frequency of violations in the stress regime suggests that the GJR-GARCH model adapts effectively to volatility spikes. During high-volatility periods, conditional volatility rises sharply, leading to more conservative (wider) VaR estimates. As a result, extreme losses are more often anticipated and incorporated into the risk measure. Conversely, in low- and medium-volatility regimes, volatility is relatively subdued and VaR thresholds are tighter. In these conditions, unexpected shocks—even if moderate in absolute terms—are more likely to generate VaR exceedances. This evidence supports the idea that VaR violations are state-dependent, conditional volatility models provide better risk coverage during stress periods and model risk is more pronounced during tranquil regimes, where sudden regime shifts are harder to anticipate.
+
+To complement the analysis, the average ES at the 99% confidence level is computed separately for each volatility regime.
+
+```{r}
+ES_by_regime <- aggregate(
+  coredata(ES_99),
+  by = list(Regime = regime),
+  FUN = mean,
+  na.rm = TRUE
+)
+
+colnames(ES_by_regime)[2] <- "Average ES 99%"
+print(ES_by_regime)
+```
+
+The average Expected Shortfall at the 99% confidence level is:
+
+-   Low Volatility Regime: $0.0633$.
+
+-   Medium Volatility Regime: $0.0883$.
+
+-   High Volatility Regime: $0.1232$.
+
+Expected Shortfall increases monotonically across volatility regimes, confirming that tail losses become progressively more severe as market stress intensifies. While Value at Risk focuses on the frequency of extreme events, Expected Shortfall captures the magnitude of losses beyond the VaR threshold, making it particularly informative during turbulent periods. The results highlight three key points. Stress regimes are characterized by significantly larger conditional losses, even if VaR violations are less frequent due to wider risk bounds. The sharp increase in Expected Shortfall during high-volatility periods reflects the nonlinear propagation of shocks typical of commodity markets, where supply disruptions and macroeconomic uncertainty play a central role. While VaR adapts to volatility spikes, ES reveals that the cost of tail events during stress regimes is substantially higher, reinforcing its relevance for risk management and regulatory frameworks.
+
+For soft commodities such as cotton, these findings are particularly meaningful. Periods of elevated volatility often coincide with supply-side shocks, weather conditions, or trade-related disruptions. In such environments, risk is not only more likely but also more destructive, emphasizing the importance of regime-aware and tail-focused risk measures.
+
+The regime-based Expected Shortfall analysis confirms that:
+
+-   Downside risk is highly nonlinear.
+
+-   Stress periods amplify tail losses disproportionately.
+
+-   Combining conditional volatility models with regime classification yields a richer and more realistic assessment of market risk.
+
+# Identification of stress years
+
+To complement the regime-based analysis at the daily frequency, the model is extended to identify stress periods at the annual level. The objective is to detect years characterized by persistently elevated risk conditions, rather than isolated short-lived volatility spikes.
+
+For each calendar year, three risk indicators are constructed:
+
+1.  **Average conditional volatility**
+
+$$\bar{\sigma}_y=\frac{1}{T_y}\,\sum_{t\in y}\sigma_t$$ where $\sigma_t$ is the conditional volatility estimated from the GJR-GARCH model.
+
+2.  **Average Expected Shortfall at 99%**
+
+$$\bar{ES}_{\,99,\,y}=\frac{1}{T_y}\sum_{t\in y}\,ES_{\,99,\,t}$$ capturing the severity of tail losses over the year.
+
+3.  **Percentage of high-volatility days**
+
+$$HighStressPct_y=\frac{\#\{t\in y\ :\ High\ Volatility\ Regime\}}{T_y}\,\times 100$$ measuring the persistence of stress conditions.
+
+To classify stress years, the 90th percentile of annual average volatility is used as a threshold. Years whose mean conditional volatility exceeds this cutoff are labeled as High Stress, while the remaining years are classified as Normal.
+
+```{r}
+years <- year(index(returns))
+```
+
+```{r}
+annual_stats <- data.frame(
+  Year = unique(years)
+)
+
+annual_stats$Vol_Mean <- tapply(vol_t, years, mean, na.rm = TRUE)
+annual_stats$ES99_Mean <- tapply(coredata(ES_99), years, mean, na.rm = TRUE)
+annual_stats$HighStressPct <- tapply(regime == "High Volatility (stress)", years, mean, na.rm = TRUE) * 100
+```
+
+```{r}
+q_annual <- quantile(annual_stats$Vol_Mean, 0.90, na.rm = TRUE)
+annual_stats$StressYear <- ifelse(annual_stats$Vol_Mean >= q_annual, "High Stress", "Normal")
+annual_stats$StressYear <- factor(annual_stats$StressYear, levels = c("Normal", "High Stress"))
+```
+
+```{r}
+annual_stats <- annual_stats[order(annual_stats$Year), ]
+scale_factor <- 0.2448346
+ggplot(annual_stats, aes(x = Year)) +
+  geom_col(aes(y = Vol_Mean, fill = StressYear), color = "black") +
+  geom_line(aes(y = ES99_Mean * scale_factor), 
+            color = "darkred", size = 1.2) +
+  geom_point(aes(y = ES99_Mean * scale_factor), color = "darkred") +
+  scale_y_continuous(
+    name = "Average Volatility",
+    sec.axis = sec_axis(~./scale_factor, name = "Average ES 99%")
+  ) +
+  scale_fill_manual(values = c("Normal" = "steelblue", "High Stress" = "firebrick")) +
+  theme_minimal() +
+  labs(title = "Annual Volatility and Expected Shortfall (Cotton Futures)",
+       subtitle = "Red line represents the severity of extreme losses (ES 99%)",
+       caption = "Data: Cotton Futures (CT=F) | Model: GJR-GARCH(1,1)") +
+  theme(legend.position = "top")
+```
+
+The most sophisticated insight here is the relationship between the blue bars (Average Volatility) and the dark red line (Average ES 99%). In standard years, volatility and ES move in tandem, suggesting that risk is symmetrical and manageable through standard diversification. During "High Stress" years (marked in firebrick), we observe that the Expected Shortfall spikes disproportionately compared to the average volatility. This indicates that in crisis years, it is not just the frequency of price movements that increases, but the severity of the worst-case outcomes.
+
+```{r}
+annual_stats[order(-annual_stats$Vol_Mean), c("Year", "Vol_Mean", "ES99_Mean", "HighStressPct", "StressYear")]
+```
+
+The annual stress classification identifies three distinct high-stress years, that are: 2008, 2011 and 2022.
+
+The year 2008 exhibits a clear stress signature, with elevated average volatility and a high share of stress days. This period corresponds to a global financial shock, during which commodity markets experienced sharp repricing, liquidity stress, and heightened uncertainty. Despite cotton being an agricultural commodity, the results confirm that it was not insulated from global macro-financial turmoil.
+
+The year 2011 stands out as the most severe stress episode in the sample, with the highest average volatility and Expected Shortfall, and more than 50% of trading days classified as high-volatility. This suggests a prolonged and structural stress phase rather than a short-lived shock, consistent with periods of strong supply-side pressures and commodity-specific imbalances.
+
+The year 2022 represents a recent stress episode, characterized by volatility and tail risk levels comparable to 2011. The high percentage of stress days indicates that elevated risk conditions were persistent throughout the year, reflecting a market environment dominated by uncertainty and structural disruptions rather than transitory volatility spikes.
+
+Across the three stress years, a clear pattern emerges:
+
+-   Volatility and tail risk move jointly,
+
+-   stress periods are persistent rather than episodic,
+
+-   and extreme risk is not confined to financial crises alone but also arises from commodity-specific and macroeconomic shocks.
+
+Notably, the increase in Expected Shortfall during stress years highlights that downside risk intensifies disproportionately, reinforcing the limitations of variance-based risk measures in turbulent environments.
+
+# Conclusion
+
+This study explores the volatility and risk characteristics of cotton futures using conditional heteroskedasticity models and tail-risk measures. The analysis documents well-known stylized facts of commodity returns, including volatility clustering, heavy tails, and asymmetric responses to shocks, providing a motivation for the use of non-Gaussian and asymmetric GARCH specifications.
+
+A GJR-GARCH model with Student-t innovations is employed as an extension of a symmetric GARCH benchmark. While the model improves the representation of volatility dynamics and downside risk, the results should be interpreted as descriptive rather than predictive. Value at Risk and Expected Shortfall estimates are used to summarize tail risk under different market conditions, highlighting how risk levels vary over time.
+
+The regime-based and annual stress analyses offer a simple way to contextualize periods of elevated volatility and tail risk, linking high-frequency model outputs to broader market phases. These results do not aim to identify causal mechanisms, but rather to provide an organized empirical view of how risk evolves across different regimes in the cotton futures market.
+
+Overall, this project illustrates how standard econometric tools can be applied to soft commodity markets to support risk monitoring and exploratory analysis, and it provides a foundation for further extensions incorporating macroeconomic or supply-side information.
